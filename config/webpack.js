@@ -55,11 +55,6 @@ const filesToCopy = [
     from: "./src/index.css",
     to: "./index.css"
   },
-  // Assets directory.
-  {
-    from: "./assets",
-    to: "./assets"
-  }
 ];
 
 /**

@@ -12,31 +12,27 @@
 
 import PSPDFKit from "pspdfkit";
 
-import makeToolbarItems from "./lib/toolbar-items";
-import { processFiles } from "./lib/utils";
-import dragDrop from "drag-drop";
-
 let currentInstance = null;
-let hasUnsavedAnnotations = false;
 let isAlreadyLoaded = false;
 
-/**
- * Creates an onAnnotationsChange handler that
- * keeps track of changes.
- *
- * We skip the first call since `annotations.change` fires
- * when the PDF viewer is initialized and populated with annotations.
- */
-const createOnAnnotationsChange = () => {
-  let initialized = false;
-  return () => {
-    if (initialized) {
-      hasUnsavedAnnotations = true;
-    } else {
-      initialized = true;
-    }
-  };
-};
+const EMPTY_PDF = new TextEncoder().encode(`%PDF-1.0
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 750 1000]>>endobj
+xref
+0 4
+0000000000 65535 f
+0000000010 00000 n
+0000000053 00000 n
+0000000102 00000 n
+trailer<</Size 4/Root 1 0 R>>
+startxref
+149
+%EOF`);
+
+function destroy() {
+  console.info("Destroyed previous instance");
+  isAlreadyLoaded = false;
+  PSPDFKit.unload(".App");
+}
 
 /**
  * Main load function invoked when a dropped or selected file (PDF)
@@ -45,108 +41,55 @@ const createOnAnnotationsChange = () => {
  * If there is an existing running instance of PSPDFKit it is destroyed
  * before a creating a new one.
  */
-function load(pdfArrayBuffers) {
-  const pdfArrayBuffer = pdfArrayBuffers[0];
-
+function load() {
   if (isAlreadyLoaded) {
-    console.info("Destroyed previous instance");
-    PSPDFKit.unload(".App");
-    hasUnsavedAnnotations = false;
+    destroy();
   }
 
   isAlreadyLoaded = true;
 
-  const toolbarItems = makeToolbarItems(
-    function getInstance() {
-      return currentInstance;
-    },
-
-    function callback() {
-      hasUnsavedAnnotations = false;
-    }
-  );
-
   const configuration = {
     container: ".App",
-    document: pdfArrayBuffer,
-    toolbarItems,
-    licenseKey: process.env.PSPDFKIT_LICENSE_KEY
+    document: EMPTY_PDF.buffer,
+    licenseKey: process.env.PSPDFKIT_LICENSE_KEY,
+    initialViewState: new PSPDFKit.ViewState({
+      interactionMode: PSPDFKit.InteractionMode.INK_SIGNATURE,
+      showToolbar: false,
+    })
   };
 
   PSPDFKit.load(configuration)
-    .then(instance => {
+    .then((instance) => {
       currentInstance = instance;
-      instance.addEventListener(
-        "annotations.change",
-        createOnAnnotationsChange()
-      );
+      let value;
+      const resultPromise = new Promise((resolve) => {
+        instance.addEventListener("annotations.create", (annotations) => {
+          console.log("annotations.create");
+          if (isAlreadyLoaded) {
+            const annotation = annotations.first();
+            if (
+              annotation instanceof PSPDFKit.Annotations.InkAnnotation &&
+              annotation.isSignature
+            ) {
+              value = PSPDFKit.Annotations.toSerializableObject(annotation);
+            }
+          }
+        });
+        instance.addEventListener("viewState.change", () => {
+          if (isAlreadyLoaded) {
+            console.log("viewState.change");
+            resolve(value);
+          }
+        });
+      });
+      return resultPromise;
     })
+    .then((value) => {
+      destroy();
+      return value;
+    })
+    .then(console.log)
     .catch(console.error);
 }
 
-/**
- * The code present below is not required to make PSPDFKit work. They just provide the file picking
- * and drag n drop functionality.
- */
-
-function onFail({ message }) {
-  alert(message);
-}
-
-function shouldPreventLoad() {
-  return (
-    hasUnsavedAnnotations &&
-    !window.confirm(
-      "You have unsaved changes. By continuing, you will lose those changes."
-    )
-  );
-}
-
-/**
- * This code handles drag and drop behaviour. Once you have selected a PDF, the drag and
- * drop instance is destroyed. This means this only works for the first PDF. If you
- * want to load more PDFs, please use file picker.
- */
-let destroyListener = dragDrop("#body", {
-  onDrop: files => {
-    if (shouldPreventLoad()) {
-      return;
-    }
-
-    processFiles(files)
-      .then(arrayBuffers => {
-        destroyDragAndDrop();
-        load(arrayBuffers);
-      })
-      .catch(onFail);
-  }
-});
-
-function destroyDragAndDrop() {
-  if (destroyListener) {
-    destroyListener();
-    document.querySelector(".drag-text").classList.add("is-hidden");
-    destroyListener = null;
-  }
-}
-
-/**
- * The code below handles the file picket via the systems's default File Picker.
- */
-function onFileSelectSuccess(pdfArrayBuffers) {
-  destroyDragAndDrop();
-  load(pdfArrayBuffers);
-}
-
-document.querySelector("#selectFile").addEventListener("change", event => {
-  if (!event.target.files.length || shouldPreventLoad()) {
-    event.target.value = null;
-    return;
-  }
-
-  processFiles([...event.target.files])
-    .then(onFileSelectSuccess)
-    .catch(onFail);
-
-  event.target.value = null;
-});
+document.querySelector("#spawn-btn").addEventListener("click", load);
